@@ -193,7 +193,7 @@ class YellowNote :
                     setUrlWithoutDomain("$basePageUrl/1.html#video")
                     name = "\uD83C\uDFAC Videos"
                     date_upload = uploadAt
-                }
+                },
             )
         }
 
@@ -204,7 +204,7 @@ class YellowNote :
                     setUrlWithoutDomain("$basePageUrl/$page.html")
                     name = "\uD83D\uDCF7 Page $page"
                     date_upload = uploadAt
-                }
+                },
             )
         }
 
