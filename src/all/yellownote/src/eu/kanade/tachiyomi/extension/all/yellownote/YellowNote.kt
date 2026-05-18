@@ -218,7 +218,7 @@ class YellowNote :
                 val url = parseUrlFormStyle(imageElement.selectFirst("div.img"))!!
                 Page(
                     index = offset + i,
-                    url = null,
+                    url = url,
                     imageUrl = url,
                 )
             }
