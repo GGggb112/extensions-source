@@ -31,20 +31,13 @@ import java.util.Locale
 class YellowNote :
     HttpSource(),
     ConfigurableSource {
-
     override val id get() = 170542391855030753
-
     override val lang = "all"
     override val baseUrl by lazy { preferences.baseUrl() }
-
     override val name = "小黄书"
-
     override val supportsLatest = true
-
     override val client = network.cloudflareClient
-
     private val preferences = getPreferences { preferenceMigration() }
-
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
@@ -54,22 +47,20 @@ class YellowNote :
         availableLanguages = LanguageUtils.supportedLocaleTags.toSet(),
         classLoader = this::class.java.classLoader!!,
     )
-
     private val dateFormat = SimpleDateFormat("yyyy.MM.dd", Locale.US)
-
     private val dateRegex = """\d{4}\.\d{2}\.\d{2}""".toRegex()
-
     private val styleUrlRegex = """background-image\s*:\s*url\('([^']+)'\)""".toRegex()
-
     private val mediaCountRegex = """\d+P( \+ \d+V)?""".toRegex()
-
+    private val hasVideoRegex = """\d+P\s*\+\s*\d+V""".toRegex()
     private val mangaSelector = "div.list.photo-list > div.item.photo, div.list.amateur-list > div.item.amateur"
     private val nextPageSelector = "div.pager:first-of-type > a.pager-next"
     private val imageSelector = "div.list.photo-items > div.item.photo-image, div.list.amateur-items > div.item.amateur-image"
-
     private val videosRegex = """var videos = (\[.*?\]);""".toRegex(RegexOption.DOT_MATCHES_ALL)
     private val videoUrlRegex = """"url":"([^"]+)"""".toRegex()
     private val domainRegex = """var domain = "([^"]+)";""".toRegex()
+
+    // Track content type filter state for popular/latest (which don't receive filters)
+    private var contentTypeState = "all"
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         Preferences.buildPreferences(screen.context, intl)
@@ -78,21 +69,31 @@ class YellowNote :
 
     private fun parseMangaList(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangas = document.select(mangaSelector).map { element ->
+        val allMangas = document.select(mangaSelector).map { element ->
             SManga.create().apply {
                 val mangaEl = element.selectFirst("a")!!
                 setUrlWithoutDomain(mangaEl.absUrl("href"))
-
                 val formatMediaCount = element.select("div.tags > div")
                     .map { it.text() }
                     .firstOrNull { mediaCountRegex.matches(it) }
                     ?.let { "($it)" }
                     .orEmpty()
                 title = "${mangaEl.attr("title")}$formatMediaCount"
-
                 thumbnail_url = parseUrlFormStyle(mangaEl.selectFirst("div.img"))
                 update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
             }
+        }
+        // Filter by content type
+        val mangas = when (contentTypeState) {
+            "images" -> allMangas.filter { manga ->
+                // Keep only posts WITHOUT videos (no "+V" in title)
+                !hasVideoRegex.containsMatchIn(manga.title)
+            }
+            "videos" -> allMangas.filter { manga ->
+                // Keep only posts WITH videos ("+V" in title)
+                hasVideoRegex.containsMatchIn(manga.title)
+            }
+            else -> allMangas // "all" - show everything
         }
         val hasNextPage = document.selectFirst(nextPageSelector) != null
         return MangasPage(mangas, hasNextPage)
@@ -106,13 +107,19 @@ class YellowNote :
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/photos/sort-hot/$page.html", headers)
     override fun popularMangaParse(response: Response): MangasPage = parseMangaList(response)
-
     override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/photos/$page.html", headers)
     override fun latestUpdatesParse(response: Response): MangasPage = parseMangaList(response)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val categorySelector = filters.firstInstance<CategorySelector>()
         val sortSelector = filters.firstInstance<SortSelector>()
+        val contentTypeSelector = filters.firstInstance<ContentTypeSelector>()
+
+        // Update content type state for all browse modes
+        if (contentTypeSelector != null) {
+            contentTypeState = contentTypeSelector.selectedKey()
+        }
+
         val uriPart = when {
             query.isBlank() -> categorySelector.toUriPart()
             else -> "photos/keyword-$query"
@@ -125,6 +132,7 @@ class YellowNote :
             .build()
         return GET(httpUrl, headers)
     }
+
     override fun searchMangaParse(response: Response): MangasPage = parseMangaList(response)
 
     override fun mangaDetailsParse(response: Response): SManga {
@@ -138,7 +146,6 @@ class YellowNote :
                 parseInfosByIcon(infoCardElement, "i.fa-video-camera")?.filter { it != "-" }
             val filters = parseInfosByIcon(infoCardElement, "i.fa-filter")
             val tags = parseInfosByIcon(infoCardElement, "i.fa-tags")
-
             title = "$name$no($mediaCount)"
             author = infoCardElement.selectFirst("div.item.floating")
                 ?.text()
@@ -165,6 +172,7 @@ class YellowNote :
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val doc = response.asJsoup()
+        val html = response.body.string()
         val infoCardElement = doc.selectFirst("div.info-card.photo-detail")!!
         val uploadAt = parseInfoByIcon(infoCardElement, "i.fa-calendar-days")
             ?.let { dateFormat.tryParse(it) }
@@ -173,13 +181,34 @@ class YellowNote :
         val maxPage = doc.select("div.pager:first-of-type a.pager-num").last()?.text()?.toInt() ?: 1
         val basePageUrl = response.request.url.toString()
             .removeSuffix(".html")
-        return (maxPage downTo 1).map { page ->
-            SChapter.create().apply {
-                setUrlWithoutDomain("$basePageUrl/$page.html")
-                name = "Page $page"
-                date_upload = uploadAt
-            }
+
+        val chapters = mutableListOf<SChapter>()
+
+        // Check if this post has videos
+        val hasVideos = videosRegex.find(html) != null
+        if (hasVideos) {
+            // Add video chapter first
+            chapters.add(
+                SChapter.create().apply {
+                    setUrlWithoutDomain("$basePageUrl/1.html#video")
+                    name = "\uD83C\uDFAC Videos"
+                    date_upload = uploadAt
+                }
+            )
         }
+
+        // Add image chapters (paginated)
+        for (page in maxPage downTo 1) {
+            chapters.add(
+                SChapter.create().apply {
+                    setUrlWithoutDomain("$basePageUrl/$page.html")
+                    name = "\uD83D\uDCF7 Page $page"
+                    date_upload = uploadAt
+                }
+            )
+        }
+
+        return chapters
     }
 
     private fun parseUploadDateFromVersionInfo(doc: Document): Long? {
@@ -193,42 +222,47 @@ class YellowNote :
     override fun pageListParse(response: Response): List<Page> {
         val html = response.body.string()
         val document = Jsoup.parse(html)
+        val requestUrl = response.request.url.toString()
+        val isVideoChapter = requestUrl.contains("#video")
 
         val videoDomain = domainRegex.find(html)?.groupValues?.get(1)
             ?: "https://img.xchina.io"
 
+        if (isVideoChapter) {
+            // Return only videos
+            val videoPages = videosRegex.find(html)?.let { match ->
+                val jsonStr = match.groupValues[1]
+                videoUrlRegex.findAll(jsonStr).map { it.groupValues[1] }.toList()
+                    .mapIndexed { i, path ->
+                        Page(
+                            index = i,
+                            url = "$videoDomain$path",
+                            imageUrl = null,
+                        )
+                    }
+            } ?: emptyList()
+            return videoPages
+        }
+
+        // Return only images (for image chapters)
         val firstImageUrl = document.selectFirst(imageSelector)
             ?.let { parseUrlFormStyle(it.selectFirst("div.img")) }
-
-        val videoPages = videosRegex.find(html)?.let { match ->
-            val jsonStr = match.groupValues[1]
-            videoUrlRegex.findAll(jsonStr).map { it.groupValues[1] }.toList()
-                .mapIndexed { i, path ->
-                    Page(
-                        index = i,
-                        url = "$videoDomain$path",
-                        imageUrl = firstImageUrl,
-                    )
-                }
-        } ?: emptyList()
-
-        val offset = videoPages.size
-        val imagePages = document.select(imageSelector)
+        return document.select(imageSelector)
             .mapIndexed { i, imageElement ->
                 val url = parseUrlFormStyle(imageElement.selectFirst("div.img"))!!
                 Page(
-                    index = offset + i,
+                    index = i,
                     url = url,
                     imageUrl = url,
                 )
             }
-
-        return videoPages + imagePages
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun getFilterList() = FilterList(
+        Filters.createContentTypeSelector(intl),
+        Filter.Separator(),
         Filters.createSortSelector(intl),
         Filter.Separator(),
         Filter.Header(intl["filter.header.ignored-when-search"]),
