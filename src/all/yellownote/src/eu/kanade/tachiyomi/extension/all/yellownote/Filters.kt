@@ -19,8 +19,15 @@ class CategorySelector(name: String, values: Array<CategoryOption>) : Filter.Sel
     fun toUriPart() = values[state].uriPart
 }
 
-object Filters {
+class ContentTypeOption(val name: String, val key: String) {
+    override fun toString() = this.name
+}
 
+class ContentTypeSelector(name: String, values: Array<ContentTypeOption>) : Filter.Select<ContentTypeOption>(name, values) {
+    fun selectedKey() = values[state].key
+}
+
+object Filters {
     fun createSortSelector(intl: Intl) = SortSelector(
         intl["filter.sort.title"],
         arrayOf(
@@ -28,6 +35,15 @@ object Filters {
             SortOption(intl["filter.sort.option.popularity"], "sort-hot"),
             SortOption(intl["filter.sort.option.most-comments"], "sort-comment"),
             SortOption(intl["filter.sort.option.latest-comments"], "sort-recent"),
+        ),
+    )
+
+    fun createContentTypeSelector(intl: Intl) = ContentTypeSelector(
+        intl["filter.content_type.title"],
+        arrayOf(
+            ContentTypeOption(intl["filter.content_type.option.all"], "all"),
+            ContentTypeOption(intl["filter.content_type.option.images"], "images"),
+            ContentTypeOption(intl["filter.content_type.option.videos"], "videos"),
         ),
     )
 
