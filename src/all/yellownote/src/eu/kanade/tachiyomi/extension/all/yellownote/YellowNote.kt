@@ -171,8 +171,8 @@ class YellowNote :
         ?.text()
 
     override fun chapterListParse(response: Response): List<SChapter> {
-        val doc = response.asJsoup()
         val html = response.body.string()
+        val doc = Jsoup.parse(html)
         val infoCardElement = doc.selectFirst("div.info-card.photo-detail")!!
         val uploadAt = parseInfoByIcon(infoCardElement, "i.fa-calendar-days")
             ?.let { dateFormat.tryParse(it) }
